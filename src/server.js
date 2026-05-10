@@ -7,8 +7,6 @@ const PORT = process.env.PORT || 3000;
 const SOURCE_API =
   "https://jakpotgwab.geightdors.net/glms/v1/notify/taixiu?platform_id=g8&gid=vgmn_101";
 
-const SERVICE_URL = "https://apihitclubmd5-x6r3.onrender.com/";
-
 // ==================== LƯU LỊCH SỬ ====================
 let history = [];
 const MAX_HISTORY = 200;
@@ -212,16 +210,6 @@ async function poll() {
 
 setInterval(poll, 3000);
 poll();
-
-// ==================== TỰ PING GIỮ SERVICE LUÔN SỐNG ====================
-setInterval(async () => {
-  try {
-    await fetch(SERVICE_URL);
-    console.log(`[PING] Keep-alive OK`);
-  } catch (e) {
-    console.error(`[PING] Lỗi:`, e.message);
-  }
-}, 5 * 60 * 1000); // ping mỗi 5 phút
 
 // ==================== ENDPOINTS ====================
 app.get("/", (req, res) => {
