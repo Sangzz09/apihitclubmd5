@@ -16,45 +16,31 @@ async function fetchSource() {
   const res = await fetch(SOURCE_API);
   const json = await res.json();
 
-  // Log raw để debug lần đầu chạy
-  // console.log("RAW:", JSON.stringify(json).slice(0, 500));
+  // Chỉ xử lý khi status OK và có data
+  if (json.status !== "OK" || !json.data?.length) return null;
 
-  if (!json.data?.length) return null;
   const d = json.data[0];
 
-  // Tìm tổng điểm (eid=2) và xúc xắc (eid=1)
-  const totalEntry = d.bs?.find((b) => b.eid === 2);
-  const diceEntry  = d.bs?.find((b) => b.eid === 1);
-  if (!totalEntry) return null;
+  // d1, d2, d3 là giá trị xúc xắc trực tiếp từ API
+  const d1 = d.d1;
+  const d2 = d.d2;
+  const d3 = d.d3;
 
-  const total  = totalEntry.bc;
+  // Validate: phải là số 1-6
+  if (
+    typeof d1 !== "number" || typeof d2 !== "number" || typeof d3 !== "number" ||
+    d1 < 1 || d1 > 6 || d2 < 1 || d2 > 6 || d3 < 1 || d3 > 6
+  ) return null;
+
+  const total  = d1 + d2 + d3;           // 3–18
   const result = total >= 11 ? "Tài" : "Xỉu";
-  const dices  = parseDices(diceEntry?.v, total);
 
   return {
-    sid: d.sid,
+    sid:   d.sid,
     total,
     result,
-    dices,
-    raw: d, // giữ raw để dễ debug
+    dices: [d1, d2, d3],
   };
-}
-
-function parseDices(seed, total) {
-  if (seed) {
-    const d1 = ((seed >> 16) & 0xff) % 6 + 1;
-    const d2 = ((seed >> 8) & 0xff) % 6 + 1;
-    const d3 = (seed & 0xff) % 6 + 1;
-    if (d1 + d2 + d3 === total) return [d1, d2, d3];
-  }
-  // Fallback: tìm combo hợp lệ
-  for (let i = 0; i < 1000; i++) {
-    const d1 = Math.floor(Math.random() * 6) + 1;
-    const d2 = Math.floor(Math.random() * 6) + 1;
-    const d3 = total - d1 - d2;
-    if (d3 >= 1 && d3 <= 6) return [d1, d2, d3];
-  }
-  return [1, 1, Math.max(1, total - 2)];
 }
 
 // ==================== HELPER ====================
