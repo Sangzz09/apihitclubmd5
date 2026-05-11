@@ -343,7 +343,7 @@ function algoCauNhipDoi(hist) {
 }
 
 // ==================== TỔNG HỢP DỰ ĐOÁN ====================
-function predict(hist) {
+function predict(hist, raw = false) {
   const algos = [
     { name: "Streak",       fn: () => algoStreak(hist),       weight: 2.5 },
     { name: "Zigzag",       fn: () => algoZigzag(hist),       weight: 2.0 },
@@ -384,8 +384,9 @@ function predict(hist) {
   let rawPrediction = taiScore >= xiuScore ? "Tài" : "Xỉu";
 
   // ===== CHẶN DỰ ĐOÁN 1 PHÍA QUÁ 3 LẦN =====
-  const finalPrediction = applyAntiRepeat(rawPrediction);
-  const wasForced = finalPrediction !== rawPrediction;
+  // raw=true khi rebuild lịch sử → không dùng applyAntiRepeat để tránh sai lệch win/loss
+  const finalPrediction = raw ? rawPrediction : applyAntiRepeat(rawPrediction);
+  const wasForced = !raw && finalPrediction !== rawPrediction;
 
   const total      = taiScore + xiuScore || 1;
   const confidence = Math.round((Math.max(taiScore, xiuScore) / total) * 100);
@@ -569,30 +570,27 @@ function getPredictionStats(limit = 20) {
 }
 
 // ==================== PHỤC HỒI LOG DỰ ĐOÁN TỪ LỊCH SỬ ====================
-/**
- * Chạy lại toàn bộ history đã có để tái tạo predictionLog kèm thắng/thua.
- * Gọi sau khi history đã được nạp đủ (ví dụ sau lần poll đầu tiên tích lũy đủ dữ liệu).
- */
 function rebuildPredictionLog() {
-  if (history.length < 4) return; // cần ít nhất vài phiên
+  if (history.length < 4) return;
   predictionLog = [];
 
-  // Với mỗi phiên i (từ phiên thứ 3 trở đi), dùng history[0..i] để dự đoán phiên i+1
-  // rồi đối chiếu với history[i+1]
   for (let i = 2; i < history.length - 1; i++) {
     const slice = history.slice(0, i + 1);
-    const { prediction, wasForced } = predict(slice);
+
+    // raw=true: không dùng applyAntiRepeat (predictionLog đang build dở sẽ gây sai)
+    const { prediction, wasForced } = predict(slice, true);
     const actual = history[i + 1].result;
+
     predictionLog.push({
       prediction,
       sid:    history[i + 1].sid,
       forced: wasForced,
       actual,
-      win:    prediction === actual,
+      win:    prediction === actual,   // ĐÚng: dự đoán == kết quả thực → thắng
     });
   }
 
-  // Phiên cuối cùng: dự đoán cho phiên tiếp theo (chưa có kết quả)
+  // Phiên cuối: dự đoán tiếp theo (chưa có kết quả) — dùng antiRepeat thật
   const { prediction, wasForced } = predict(history);
   predictionLog.push({
     prediction,
@@ -603,7 +601,7 @@ function rebuildPredictionLog() {
   });
 
   if (predictionLog.length > 200) predictionLog = predictionLog.slice(-200);
-  console.log(`[rebuildPredictionLog] Đã tái tạo ${predictionLog.length} mục từ lịch sử.`);
+  console.log(`[rebuildPredictionLog] Tái tạo ${predictionLog.length} mục, ${predictionLog.filter(p=>p.win===true).length} thắng / ${predictionLog.filter(p=>p.win===false).length} thua`);
 }
 
 
