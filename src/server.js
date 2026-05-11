@@ -568,8 +568,47 @@ function getPredictionStats(limit = 20) {
   };
 }
 
-// ==================== POLLING ====================
+// ==================== PHỤC HỒI LOG DỰ ĐOÁN TỪ LỊCH SỬ ====================
+/**
+ * Chạy lại toàn bộ history đã có để tái tạo predictionLog kèm thắng/thua.
+ * Gọi sau khi history đã được nạp đủ (ví dụ sau lần poll đầu tiên tích lũy đủ dữ liệu).
+ */
+function rebuildPredictionLog() {
+  if (history.length < 4) return; // cần ít nhất vài phiên
+  predictionLog = [];
+
+  // Với mỗi phiên i (từ phiên thứ 3 trở đi), dùng history[0..i] để dự đoán phiên i+1
+  // rồi đối chiếu với history[i+1]
+  for (let i = 2; i < history.length - 1; i++) {
+    const slice = history.slice(0, i + 1);
+    const { prediction, wasForced } = predict(slice);
+    const actual = history[i + 1].result;
+    predictionLog.push({
+      prediction,
+      sid:    history[i + 1].sid,
+      forced: wasForced,
+      actual,
+      win:    prediction === actual,
+    });
+  }
+
+  // Phiên cuối cùng: dự đoán cho phiên tiếp theo (chưa có kết quả)
+  const { prediction, wasForced } = predict(history);
+  predictionLog.push({
+    prediction,
+    sid:    history[history.length - 1].sid + 1,
+    forced: wasForced,
+    actual: undefined,
+    win:    undefined,
+  });
+
+  if (predictionLog.length > 200) predictionLog = predictionLog.slice(-200);
+  console.log(`[rebuildPredictionLog] Đã tái tạo ${predictionLog.length} mục từ lịch sử.`);
+}
+
+
 let lastSid = null;
+let logBuilt = false; // đánh dấu đã rebuild lần đầu chưa
 
 async function poll() {
   try {
@@ -578,7 +617,7 @@ async function poll() {
     if (data.sid === lastSid) return;
     lastSid = data.sid;
 
-    // ── Đánh dấu thắng/thua cho dự đoán của phiên này ──
+    // ── Đánh dấu thắng/thua cho dự đoán của phiên này (incremental) ──
     const prevPred = predictionLog.find((p) => p.sid === data.sid && p.actual === undefined);
     if (prevPred) {
       prevPred.actual = data.result;
@@ -593,17 +632,28 @@ async function poll() {
     });
     if (history.length > MAX_HISTORY) history.shift();
 
-    // Sinh dự đoán cho phiên tiếp theo và lưu log
-    if (history.length >= 3) {
-      const { prediction, wasForced } = predict(history);
-      predictionLog.push({
-        prediction,
-        sid:    data.sid + 1,
-        forced: wasForced,
-        actual: undefined,
-        win:    undefined,
-      });
-      if (predictionLog.length > 200) predictionLog.shift();
+    // ── Lần đầu đủ dữ liệu: rebuild toàn bộ log từ history sẵn có ──
+    if (!logBuilt && history.length >= 10) {
+      rebuildPredictionLog();
+      logBuilt = true;
+      console.log(`[${new Date().toISOString()}] Phiên ${data.sid} → ${data.result} (${data.total}) 🎲 [${data.dices.join(",")}]`);
+      return; // predictionLog đã có phiên tiếp theo từ rebuild rồi
+    }
+
+    // Sinh dự đoán cho phiên tiếp theo (incremental, sau khi đã rebuild)
+    if (logBuilt && history.length >= 3) {
+      const nextSid = data.sid + 1;
+      if (!predictionLog.find((p) => p.sid === nextSid)) {
+        const { prediction, wasForced } = predict(history);
+        predictionLog.push({
+          prediction,
+          sid:    nextSid,
+          forced: wasForced,
+          actual: undefined,
+          win:    undefined,
+        });
+        if (predictionLog.length > 200) predictionLog.shift();
+      }
     }
 
     console.log(
