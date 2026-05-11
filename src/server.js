@@ -12,7 +12,7 @@ let history = [];
 const MAX_HISTORY = 300;
 
 // ==================== CHẶN DỰ ĐOÁN 1 PHÍA QUÁ 3 LẦN ====================
-let predictionLog = []; // lưu các dự đoán đã phát ra: [{prediction, sid}]
+let predictionLog = []; // [{prediction, sid, forced, actual, win}]
 const MAX_SAME_PREDICTION = 3;
 
 /**
@@ -517,26 +517,54 @@ function getStats(hist, win = 50) {
   };
 }
 
-// ==================== THỐNG KÊ DỰ ĐOÁN ====================
-function getPredictionStats() {
-  if (predictionLog.length < 2) return null;
-  const last20 = predictionLog.slice(-20);
-  const taiVotes = last20.filter((p) => p.prediction === "Tài").length;
-  const forced   = last20.filter((p) => p.forced).length;
+// ==================== THỐNG KÊ DỰ ĐOÁN (THẮNG/THUA) ====================
+function getPredictionStats(limit = 20) {
+  // Chỉ lấy những phiên đã có kết quả thực
+  const resolved = predictionLog.filter((p) => p.actual !== undefined);
+  if (resolved.length === 0) return null;
+
+  const recent   = resolved.slice(-limit);
+  const wins     = recent.filter((p) => p.win).length;
+  const losses   = recent.length - wins;
+  const winRate  = recent.length > 0 ? Math.round((wins / recent.length) * 100) : 0;
+
+  // Streak hiện tại (W hoặc L)
+  let curStreak = 0, curStreakType = null;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const t = recent[i].win ? "W" : "L";
+    if (curStreakType === null) { curStreakType = t; curStreak = 1; }
+    else if (t === curStreakType) curStreak++;
+    else break;
+  }
+
+  // Streak thắng dài nhất
+  let bestStreak = 0, tmp = 0;
+  for (const p of resolved) {
+    if (p.win) { tmp++; bestStreak = Math.max(bestStreak, tmp); }
+    else tmp = 0;
+  }
+
+  // Forced flip accuracy
+  const forcedResolved = resolved.filter((p) => p.forced);
+  const forcedWins     = forcedResolved.filter((p) => p.win).length;
+
   return {
-    total:       last20.length,
-    tai:         taiVotes,
-    xiu:         last20.length - taiVotes,
-    forced_flip: forced,
-    last_streak: (() => {
-      const last = last20[last20.length - 1]?.prediction;
-      let s = 1;
-      for (let i = last20.length - 2; i >= 0; i--) {
-        if (last20[i].prediction === last) s++;
-        else break;
-      }
-      return s;
-    })(),
+    tong_du_doan:    resolved.length,
+    cua_so_gan_nhat: recent.length,
+    thang:           wins,
+    thua:            losses,
+    ty_le_thang:     `${winRate}%`,
+    streak_hien_tai: curStreakType === "W"
+      ? `🔥 Thắng ${curStreak} liên tiếp`
+      : `❄️ Thua ${curStreak} liên tiếp`,
+    streak_thang_dai_nhat: `🏆 ${bestStreak} phiên`,
+    forced_flip: {
+      tong:      forcedResolved.length,
+      thang:     forcedWins,
+      ty_le:     forcedResolved.length
+        ? `${Math.round((forcedWins / forcedResolved.length) * 100)}%`
+        : "N/A",
+    },
   };
 }
 
@@ -549,6 +577,14 @@ async function poll() {
     if (!data) return;
     if (data.sid === lastSid) return;
     lastSid = data.sid;
+
+    // ── Đánh dấu thắng/thua cho dự đoán của phiên này ──
+    const prevPred = predictionLog.find((p) => p.sid === data.sid && p.actual === undefined);
+    if (prevPred) {
+      prevPred.actual = data.result;
+      prevPred.win    = prevPred.prediction === data.result;
+    }
+
     history.push({
       sid:    data.sid,
       result: data.result,
@@ -560,8 +596,14 @@ async function poll() {
     // Sinh dự đoán cho phiên tiếp theo và lưu log
     if (history.length >= 3) {
       const { prediction, wasForced } = predict(history);
-      predictionLog.push({ prediction, sid: data.sid + 1, forced: wasForced });
-      if (predictionLog.length > 100) predictionLog.shift();
+      predictionLog.push({
+        prediction,
+        sid:    data.sid + 1,
+        forced: wasForced,
+        actual: undefined,
+        win:    undefined,
+      });
+      if (predictionLog.length > 200) predictionLog.shift();
     }
 
     console.log(
@@ -602,7 +644,7 @@ app.get("/", (req, res) => {
     pattern:        pattern,
     anti_repeat:    wasForced ? "⚠️ Đã đảo chiều (chặn 3 lần liên tiếp)" : "OK",
     thong_ke:       getStats(history),
-    thong_ke_du_doan: getPredictionStats(),
+    thong_ke_du_doan: getPredictionStats(20),
     // debug: { breakdown, taiScore, xiuScore },
   });
 });
@@ -637,11 +679,59 @@ app.get("/debug", (req, res) => {
     xiuScore,
     breakdown,
     thong_ke:     getStats(history),
-    thong_ke_du_doan: getPredictionStats(),
+    thong_ke_du_doan: getPredictionStats(20),
   });
 });
 
-// GET /raw — Xem raw data từ API nguồn
+// GET /thongke — Thống kê thắng/thua chi tiết
+app.get("/thongke", (req, res) => {
+  const limit   = parseInt(req.query.limit) || 50;
+  const stats   = getPredictionStats(limit);
+  const resolved = predictionLog.filter((p) => p.actual !== undefined);
+
+  if (!stats) {
+    return res.json({
+      id:      "@sewdangcap",
+      status:  "⏳ Chưa đủ dữ liệu để thống kê",
+      message: "Cần ít nhất 1 phiên đã có kết quả thực.",
+    });
+  }
+
+  // Lịch sử gần nhất có kết quả (mới nhất đầu)
+  const recentResolved = resolved.slice(-limit).reverse().map((p) => ({
+    "📌 Phiên":    p.sid,
+    "🔮 Dự đoán": p.prediction,
+    "🎲 Thực tế": p.actual,
+    "📊 Kết quả": p.win ? "✅ Thắng" : "❌ Thua",
+    "⚡ Force":   p.forced ? "Có" : "—",
+  }));
+
+  // Bar tỉ lệ thắng (ASCII)
+  const winPct = parseInt(stats.ty_le_thang);
+  const bar    = "█".repeat(Math.round(winPct / 5)) + "░".repeat(20 - Math.round(winPct / 5));
+
+  res.json({
+    id:    "@sewdangcap",
+    "═══════ 🏅 TỔNG QUAN ═══════": null,
+    "📈 Tổng phiên đã dự đoán":     stats.tong_du_doan,
+    "🔍 Cửa sổ phân tích":          `${stats.cua_so_gan_nhat} phiên gần nhất`,
+    "✅ Thắng":                      stats.thang,
+    "❌ Thua":                       stats.thua,
+    "🎯 Tỉ lệ thắng":               stats.ty_le_thang,
+    "📊 Biểu đồ":                   `[${bar}] ${stats.ty_le_thang}`,
+    "═══════ 🔥 CHUỖI ═══════": null,
+    "⚡ Streak hiện tại":           stats.streak_hien_tai,
+    "🏆 Streak thắng dài nhất":    stats.streak_thang_dai_nhat,
+    "═══════ ⚡ FORCE FLIP ═══════": null,
+    "🔄 Tổng lần force đảo":        stats.forced_flip.tong,
+    "✅ Thắng sau force":            stats.forced_flip.thang,
+    "🎯 Tỉ lệ thắng khi force":    stats.forced_flip.ty_le,
+    "═══════ 📜 LỊCH SỬ ═══════": null,
+    lich_su: recentResolved,
+  });
+});
+
+
 app.get("/raw", async (req, res) => {
   try {
     const r    = await fetch(SOURCE_API);
