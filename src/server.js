@@ -607,8 +607,30 @@ function rebuildPredictionLog() {
 }
 
 
-let lastSid = null;
-let logBuilt = false; // đánh dấu đã rebuild lần đầu chưa
+// ==================== PERSIST HISTORY TO DISK ====================
+const fs      = require("fs");
+const SAVE_PATH = "./history_cache.json";
+
+function saveHistory() {
+  try {
+    fs.writeFileSync(SAVE_PATH, JSON.stringify({ history, predictionLog }), "utf8");
+  } catch (e) { console.error("saveHistory error:", e.message); }
+}
+
+function loadHistory() {
+  try {
+    if (!fs.existsSync(SAVE_PATH)) return;
+    const raw  = fs.readFileSync(SAVE_PATH, "utf8");
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.history))       history       = data.history.slice(-MAX_HISTORY);
+    if (Array.isArray(data.predictionLog)) predictionLog = data.predictionLog.slice(-200);
+    console.log(`[loadHistory] Đã nạp ${history.length} phiên, ${predictionLog.filter(p=>p.actual!==undefined).length} mục đã có kết quả.`);
+  } catch (e) { console.error("loadHistory error:", e.message); }
+}
+
+// ==================== POLLING ====================
+let lastSid  = null;
+let logBuilt = false;
 
 async function poll() {
   try {
@@ -617,55 +639,59 @@ async function poll() {
     if (data.sid === lastSid) return;
     lastSid = data.sid;
 
-    // ── Đánh dấu thắng/thua cho dự đoán của phiên này (incremental) ──
+    // ── Đánh dấu thắng/thua cho dự đoán của phiên vừa có kết quả ──
     const prevPred = predictionLog.find((p) => p.sid === data.sid && p.actual === undefined);
     if (prevPred) {
       prevPred.actual = data.result;
       prevPred.win    = prevPred.prediction === data.result;
     }
 
-    history.push({
-      sid:    data.sid,
-      result: data.result,
-      dices:  data.dices,
-      total:  data.total,
-    });
-    if (history.length > MAX_HISTORY) history.shift();
-
-    // ── Lần đầu đủ dữ liệu: rebuild toàn bộ log từ history sẵn có ──
-    if (!logBuilt && history.length >= 10) {
-      rebuildPredictionLog();
-      logBuilt = true;
-      console.log(`[${new Date().toISOString()}] Phiên ${data.sid} → ${data.result} (${data.total}) 🎲 [${data.dices.join(",")}]`);
-      return; // predictionLog đã có phiên tiếp theo từ rebuild rồi
+    // Tránh duplicate khi load từ cache
+    if (!history.find((h) => h.sid === data.sid)) {
+      history.push({ sid: data.sid, result: data.result, dices: data.dices, total: data.total });
+      if (history.length > MAX_HISTORY) history.shift();
     }
 
-    // Sinh dự đoán cho phiên tiếp theo (incremental, sau khi đã rebuild)
-    if (logBuilt && history.length >= 3) {
-      const nextSid = data.sid + 1;
-      if (!predictionLog.find((p) => p.sid === nextSid)) {
-        const { prediction, wasForced } = predict(history);
-        predictionLog.push({
-          prediction,
-          sid:    nextSid,
-          forced: wasForced,
-          actual: undefined,
-          win:    undefined,
-        });
-        if (predictionLog.length > 200) predictionLog.shift();
+    // ── Rebuild log lần đầu (nếu chưa có đủ từ cache) ──
+    if (!logBuilt) {
+      const resolved = predictionLog.filter((p) => p.actual !== undefined);
+      if (history.length >= 10 && resolved.length < 5) {
+        // Cache không đủ → rebuild từ history
+        rebuildPredictionLog();
       }
+      logBuilt = true;
     }
 
-    console.log(
-      `[${new Date().toISOString()}] Phiên ${data.sid} → ${data.result} (${data.total}) 🎲 [${data.dices.join(",")}]`
-    );
+    // ── Sinh dự đoán cho phiên tiếp theo ──
+    const nextSid = data.sid + 1;
+    if (history.length >= 3 && !predictionLog.find((p) => p.sid === nextSid)) {
+      const { prediction, wasForced } = predict(history);
+      predictionLog.push({ prediction, sid: nextSid, forced: wasForced, actual: undefined, win: undefined });
+      if (predictionLog.length > 200) predictionLog.shift();
+    }
+
+    // Lưu xuống disk mỗi phiên
+    saveHistory();
+
+    console.log(`[${new Date().toISOString()}] Phiên ${data.sid} → ${data.result} (${data.total}) 🎲 [${data.dices.join(",")}]`);
   } catch (e) {
     console.error("Poll error:", e.message);
   }
 }
 
+// ── Khởi động: nạp cache trước, rồi mới poll ──
+loadHistory();
+// Nếu load được history nhưng chưa đủ predictionLog → rebuild ngay
+if (history.length >= 10 && predictionLog.filter(p => p.actual !== undefined).length < 5) {
+  rebuildPredictionLog();
+  logBuilt = true;
+} else if (history.length >= 10) {
+  logBuilt = true;
+}
+
 setInterval(poll, 3000);
 poll();
+
 
 // ==================== ENDPOINTS ====================
 
